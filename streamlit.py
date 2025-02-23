@@ -1,5 +1,5 @@
 # app.py
-import BCGPs.streamlit as st
+import streamlit as st
 import jax
 import jax.numpy as jnp
 import numpy as np
