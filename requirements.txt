@@ -1,0 +1,5 @@
+streamlit
+jax
+jaxlib
+numpy
+matplotlib
