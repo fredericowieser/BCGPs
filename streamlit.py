@@ -130,8 +130,8 @@ def run_bcgp_app():
         boundary_2 = st.slider("Boundary 2", min_value=0.5, max_value=1.0, value=1.0, step=0.01)
         st.markdown("---")
         
-        # Training hyperparameters
-        st.markdown("Training hyperparameters:")
+        # Hyperparameters
+        st.markdown("Initial Kernel hyperparameters:")
         amplitude = st.slider("Amplitude", min_value=0.1, max_value=2.0, value=1.0, step=0.1)
         lengthscale = st.slider("Lengthscale", min_value=0.1, max_value=1.0, value=0.2, step=0.1)
         st.markdown("---")
