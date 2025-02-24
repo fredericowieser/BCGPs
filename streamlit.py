@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import jax
 import jax.numpy as jnp
@@ -10,6 +9,21 @@ from typing import Dict
 # 1) PDE logic & GP helper functions
 # -------------------------------
 
+def fit_quadratic_and_extract_factors(xs_plot, u_mean_arr):
+    """
+    Fits a quadratic u(x) ≈ A*x^2 + B*x + C to (xs_plot, u_mean_arr)
+    and extracts values v1, v2 such that:
+        u(x) ≈ (x - v1)(v2 - x)
+    Returns v1, v2.
+    """
+    A, B, C = np.polyfit(xs_plot, u_mean_arr, 2)  # Fit quadratic
+
+    # x = -b +/- sqrt(b^2 - 4ac) / 2a
+    v1 = (-B - np.sqrt(B**2 - 4*A*C)) / (2*A)
+    v2 = (-B + np.sqrt(B**2 - 4*A*C)) / (2*A)
+
+    return min(v1, v2), max(v1, v2)  # Ensure v1 < v2
+
 def second_derivative(fn, x):
     """
     Compute second derivative (fn''(x)) in 1D using JAX auto-diff.
@@ -18,11 +32,14 @@ def second_derivative(fn, x):
     d2fn_dx2 = jax.grad(dfn_dx) # second derivative
     return d2fn_dx2(x)
 
-def phi(x):
+def phi(params, x):
     """
-    Approximate distance function for [0,1] => ensures u(0)=u(1)=0.
+    Approximate distance function for [boundary_1, boundary_2].
+    Enforces u(boundary_1) = u(boundary_2) = 0 by construction.
     """
-    return x * (1.0 - x)
+    b1 = params["boundary_1"]
+    b2 = params["boundary_2"]
+    return (x - b1) * (b2 - x)
 
 def rbf_kernel(params, xa, xb):
     """
@@ -35,10 +52,16 @@ def rbf_kernel(params, xa, xb):
 
 def bcgp_kernel(params, xa, xb):
     """
-    Boundary-constrained kernel: phi(x)*phi(x') * rbf_kernel(x,x').
-    Imposes u(0)=u(1)=0 automatically for any linear combination of kernel basis.
+    Boundary-constrained kernel that uses the above phi(params, x)
+    to ensure the solution is zero at x=boundary_1 and x=boundary_2.
     """
-    return phi(xa)*phi(xb)*rbf_kernel(params, xa, xb)
+    amplitude   = params["amplitude"]
+    lengthscale = params["lengthscale"]
+    # standard RBF part
+    sqdist      = (xa - xb)**2
+    rbf_val     = amplitude**2 * jnp.exp(-0.5 * sqdist / (lengthscale**2))
+    # scaled by phi(xa)*phi(xb)
+    return phi(params, xa) * phi(params, xb) * rbf_val
 
 def neg_u_dd(params, x):
     """
@@ -60,11 +83,13 @@ def f_true(x):
     """
     return 2.0*jnp.ones_like(x)
 
-def u_true(x):
+def u_true(params, x):
     """
     Analytic solution for PDE + BC:  -u''(x)=2, u(0)=0, u(1)=0 => u(x)= x - x^2.
     """
-    return x - x**2
+    b1 = params["boundary_1"]
+    b2 = params["boundary_2"]
+    return (x - b1) * (b2 - x)
 
 def loss_fn(params):
     """
@@ -97,46 +122,75 @@ def run_bcgp_app():
 
     # User controls
     with st.sidebar:
-        st.markdown("Partial Differential Equation (PDE)")
+        st.header("Hyperparameters & Settings")
+        
+        # Boundary conditions
+        st.markdown("Boundary conditions:")
+        boundary_1 = st.slider("Boundary 1", min_value=0.0, max_value=0.5, value=0.0, step=0.01)
+        boundary_2 = st.slider("Boundary 2", min_value=0.5, max_value=1.0, value=1.0, step=0.01)
+        st.markdown("---")
+        
+        # Training hyperparameters
+        st.markdown("Training hyperparameters:")
+        amplitude = st.slider("Amplitude", min_value=0.1, max_value=2.0, value=1.0, step=0.1)
+        lengthscale = st.slider("Lengthscale", min_value=0.1, max_value=1.0, value=0.2, step=0.1)
+        st.markdown("---")
 
-        st.latex(r"-u''(x) = 2, \quad x \in (0,1)")
+        # Plotting settings
+        st.markdown("Plotting Settings:")
+        error_bars = st.checkbox("Show Uncertainty", value=False)
+        plot_true_base_problem = st.checkbox("Plot Analytical Solution", value=True)
+        adaptive_lengthscale = st.checkbox("Adaptive Plot Axes", value=False)
+        plot_frequency = st.slider(
+            "Plot frequency",
+            min_value=1, 
+            max_value=26,
+            value=2,
+            step=1,
+        )
+        st.markdown("---")
 
-        st.markdown("We exactly impose the boundary conditions:")
+        # Training settings
+        st.header("Training")
+        n_points = st.slider(
+            "Collocation points",
+            min_value=2,
+            max_value=40,
+            value=10, 
+            step=1,
+        )
+        n_train_iters = st.slider(
+            "Training iterations",
+            min_value=10, 
+            max_value=1000,
+            value=100,
+            step=10,
+        )
+        lr = st.slider("Learning rate", min_value=1e-3, max_value=1e-1, value=1e-2, step=1e-3, format="%.3f")
 
-        st.latex(r"u(0) = u(1) = 0")
-
-        st.markdown("by using the function:")
-
-        st.latex(r"\phi(x) = x(1-x)")
-        error_bars = st.checkbox("Show error bars", value=True)
-        n_points = st.slider("Number of PDE collocation points", 
-                            min_value=2, max_value=40, value=10, step=1)
-        n_train_iters = st.slider("Number of training iterations", 
-                                min_value=10, max_value=1000, value=200, step=10)
-        lr = st.slider("Learning rate", min_value=1e-3, max_value=1e-1, 
-                    value=1e-2, step=1e-3, format="%.3f")
 
     # Button to start training
+
     if st.button("Run Training"):
-        st.write(f"Training with n_points={n_points}, n_train_iters={n_train_iters}, lr={lr:.3f}...")
+        st.write(f"Starting training with {n_train_iters} iterations...")
+        st.write(f"Solving for -u''(x) = 2 on ({boundary_1},{boundary_2}) with u({boundary_1})=u({boundary_2})=0")
+        st.write(f"phi(x) = (x - {boundary_1})({boundary_2} - x)")
         
         # Collocation data
         # skip endpoints to avoid duplication with BC
-        Xcol = jnp.linspace(0, 1, n_points+2)[1:-1]
+        Xcol = jnp.linspace(boundary_1, boundary_2, n_points+2)[1:-1]
         Ycol = f_true(Xcol)
 
         # Initialize parameters
         params = {
-            "amplitude": 1.0,
-            "lengthscale": 0.2,
+            "amplitude": amplitude,
+            "lengthscale": lengthscale,
             "alpha": jnp.zeros(shape=(len(Xcol),)), 
             "Xcol": Xcol,
-            "ycol": Ycol
+            "ycol": Ycol,
+            "boundary_1": boundary_1,
+            "boundary_2": boundary_2,
         }
-
-        # We'll plot every "plot_frequency" steps
-        # plot_frequency = max(1, n_train_iters // 5)
-        plot_frequency = 1
 
         # Create a placeholder for the plot
         plot_placeholder = st.empty()
@@ -161,21 +215,25 @@ def run_bcgp_app():
                 def u_std(xx):
                     return jnp.sqrt(bcgp_kernel(params, xx, xx) + 1e-6)
 
-                xs_plot = jnp.linspace(0.0, 1.0, 200)
+                xs_plot = jnp.linspace(boundary_1, boundary_2, 200)
                 u_mean_arr = jax.vmap(u_pred)(xs_plot)
                 u_std_arr  = jax.vmap(u_std)(xs_plot)
-                u_exact_arr= u_true(xs_plot)
 
                 # Matplotlib figure
                 fig, ax = plt.subplots(figsize=(6,4))
-                ax.plot(xs_plot, u_exact_arr, 'k-',  label="True: x - x^2")
+                if not adaptive_lengthscale:
+                    ax.set_ylim([-0.2, 0.5])
+                    ax.set_xlim([0, 1])
+                if plot_true_base_problem:
+                    u_exact_arr= u_true(params, xs_plot)
+                    ax.plot(xs_plot, u_exact_arr, 'k-',  label="Analytical Soln.")
                 ax.plot(xs_plot, u_mean_arr,  'b--', label="BCGP Mean")
                 if error_bars:
                     ax.fill_between(np.array(xs_plot),
-                                    np.array(u_mean_arr - 2*u_std_arr),
-                                    np.array(u_mean_arr + 2*u_std_arr),
+                                    np.array(u_mean_arr - u_std_arr),
+                                    np.array(u_mean_arr + u_std_arr),
                                     color='blue', alpha=0.2, 
-                                    label="±2σ region")
+                                    label="±σ region")
                 ax.scatter(np.array(Xcol), 
                            np.zeros_like(Xcol), 
                            marker='x', color='red', 
@@ -188,6 +246,68 @@ def run_bcgp_app():
                 plot_placeholder.pyplot(fig)
         
         st.success("Training complete!")
+
+        # Compare Analytical Solution with BCGP
+        v1, v2 = fit_quadratic_and_extract_factors(xs_plot, u_mean_arr)
+        st.write(f"Analytical solution: u(x) = (x - {boundary_1})({boundary_2} - x)")
+        st.write(f"BCGP solution: u(x) = (x - {v1:.4f})({v2:.4f} - x) (approx. from quadratic fit)")
+
+
+    st.markdown("---")
+    st.markdown("### PDE & Boundary Conditions")
+
+    st.latex(r"-u''(x) = 2, \quad x \in (b_1,b_2)")
+
+    st.latex(r"u(b_1) = 0, \quad u(b_2) = 0")
+
+    st.markdown("---")
+    st.markdown("### Analytical Solution")
+
+    st.markdown("#### Step 1: Solve the Differential Equation")
+
+    st.latex(r"u''(x) = -2")
+
+    st.latex(r"u'(x) = \int -2\,dx = -2x + C_1")
+
+    st.latex(r"u(x) = \int (-2x + C_1)\,dx = -x^2 + C_1 x + C_2")
+
+    st.markdown("#### Step 2: Apply the Boundary Conditions")
+
+    st.latex(r"u(b_1) = -b_1^2 + C_1 b_1 + C_2 = 0")
+
+    st.latex(r"u(b_2) = -b_2^2 + C_1 b_2 + C_2 = 0")
+
+    st.markdown("#### Step 3: Solve for Constants \\( C_1 \\) and \\( C_2 \\)")
+
+    st.latex(r"\begin{cases} -b_1^2 + C_1 b_1 + C_2 = 0, \\ -b_2^2 + C_1 b_2 + C_2 = 0. \end{cases}")
+
+    st.markdown("Subtracting the two equations to eliminate \\( C_2 \\):")
+
+    st.latex(r"\left(-b_2^2 + C_1 b_2 + C_2\right) - \left(-b_1^2 + C_1 b_1 + C_2\right) = 0")
+
+    st.latex(r"-b_2^2 + C_1 b_2 - (-b_1^2 + C_1 b_1) = 0")
+
+    st.latex(r"-b_2^2 + C_1 b_2 + b_1^2 - C_1 b_1 = 0")
+
+    st.latex(r"C_1 (b_2 - b_1) = b_2^2 - b_1^2")
+
+    st.latex(r"C_1 = \frac{b_2^2 - b_1^2}{b_2 - b_1} = b_2 + b_1")
+
+    st.markdown("Now substitute \\( C_1 \\) into one of the boundary equations:")
+
+    st.latex(r"-b_1^2 + (b_1 + b_2) b_1 + C_2 = 0")
+
+    st.latex(r"-b_1^2 + b_1^2 + b_1 b_2 + C_2 = 0")
+
+    st.latex(r"C_2 = -b_1 b_2")
+
+    st.markdown("#### Step 4: Final Solution")
+
+    st.latex(r"u(x) = -x^2 + (b_1 + b_2) x - b_1 b_2")
+
+    st.markdown("Alternatively, this can be rewritten as:")
+
+    st.latex(r"u(x) = (x - b_1)(b_2 - x)")
 
 
 # Call the main function
