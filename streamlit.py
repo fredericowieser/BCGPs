@@ -10,12 +10,6 @@ from typing import Dict
 # -------------------------------
 
 def fit_quadratic_and_extract_factors(xs_plot, u_mean_arr):
-    """
-    Fits a quadratic u(x) ≈ A*x^2 + B*x + C to (xs_plot, u_mean_arr)
-    and extracts values v1, v2 such that:
-        u(x) ≈ (x - v1)(v2 - x)
-    Returns v1, v2.
-    """
     A, B, C = np.polyfit(xs_plot, u_mean_arr, 2)  # Fit quadratic
 
     # x = -b +/- sqrt(b^2 - 4ac) / 2a
@@ -25,10 +19,7 @@ def fit_quadratic_and_extract_factors(xs_plot, u_mean_arr):
     return min(v1, v2), max(v1, v2)  # Ensure v1 < v2
 
 def second_derivative(fn, x):
-    """
-    Compute second derivative (fn''(x)) in 1D using JAX auto-diff.
-    """
-    dfn_dx = jax.grad(fn)       # first derivative
+    dfn_dx = jax.grad(fn) # first derivative
     d2fn_dx2 = jax.grad(dfn_dx) # second derivative
     return d2fn_dx2(x)
 
@@ -43,7 +34,7 @@ def phi(params, x):
 
 def rbf_kernel(params, xa, xb):
     """
-    Standard squared-exponential kernel for the latent GP \hat{u}.
+    Squared-exponential kernel for the latent GP.
     """
     amplitude = params["amplitude"]
     lengthscale = params["lengthscale"]
@@ -52,7 +43,7 @@ def rbf_kernel(params, xa, xb):
 
 def bcgp_kernel(params, xa, xb):
     """
-    Boundary-constrained kernel that uses the above phi(params, x)
+    Boundary-constrained kernel that uses the ADF phi(params, x)
     to ensure the solution is zero at x=boundary_1 and x=boundary_2.
     """
     amplitude   = params["amplitude"]
@@ -66,7 +57,7 @@ def bcgp_kernel(params, xa, xb):
 def neg_u_dd(params, x):
     """
     Evaluate -u''(x) for u(x) = sum_j alpha_j k_bcgp(x, Xcol_j).
-    PDE collocation method:  alpha_j's are fitted to enforce -u''(x) ~ 2.0 at x_f.
+    PDE collocation method:  alpha_j's are fitted to enforce -u''(x) = 2.0 at x_f.
     """
     alpha = params["alpha"]
     Xcol  = params["Xcol"]
